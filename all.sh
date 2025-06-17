@@ -9,9 +9,7 @@ cd "$(dirname "$0")"
 
 echo "Tuning for cores: $1"
 ./cpu.sh
-./irq-pin.sh "$1"  
+./irq-pin.sh "$1"
 ./offloads.sh disable
 ./busy-poll.sh enable 50
-./flow-config/rps.sh disable
-./flow-config/rfs.sh disable
 echo "Done"
