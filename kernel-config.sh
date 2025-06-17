@@ -7,7 +7,7 @@
 # ─── KERNEL CONFIG ─── #
 #########################
 # Ultra-low latency kernel parameters
-BASE_PARAMS="isolcpus={CORES} nohz_full={CORES} housekeeping=nohz,cpus:0 intel_pstate=disable nosmt idle=poll intel_idle.max_cstate=0 processor.max_cstate=0 mitigations=off clocksource=tsc"
+BASE_PARAMS="isolcpus={CORES} nohz_full={CORES} housekeeping=nohz,cpus:0 intel_pstate=disable nosmt intel_idle.max_cstate=0 processor.max_cstate=0 mitigations=off clocksource=tsc"
 #########################
 
 set -euo pipefail

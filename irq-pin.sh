@@ -98,8 +98,11 @@ if [[ "$QUEUE_COUNT" == "auto" ]]; then
 fi
 
 set -uo pipefail
-[[ ${#CORE_LIST[@]} -eq $QUEUE_COUNT ]] || {
-  echo "CORE_LIST length (${#CORE_LIST[@]}) ≠ QUEUE_COUNT ($QUEUE_COUNT)"; exit 1; }
+# Allow more queues than cores for round-robin assignment
+if [[ $QUEUE_COUNT -lt ${#CORE_LIST[@]} ]]; then
+  echo "Error: QUEUE_COUNT ($QUEUE_COUNT) cannot be less than core count (${#CORE_LIST[@]})"
+  exit 1
+fi
 
 log_fail() { printf '    ✗ %s\n' "$1"; }
 
@@ -164,7 +167,10 @@ if [[ ${#IRQS[@]} -ne $QUEUE_COUNT ]]; then
   log_fail "found ${#IRQS[@]} IRQs, expected $QUEUE_COUNT — pinning skipped"
 else
   for i in $(seq 0 $((QUEUE_COUNT-1))); do
-    irq=${IRQS[$i]} core=${CORE_LIST[$i]}
+    irq=${IRQS[$i]}
+    # Round-robin assignment: use modulo to cycle through available cores
+    core_idx=$((i % ${#CORE_LIST[@]}))
+    core=${CORE_LIST[$core_idx]}
     echo "    IRQ $irq → CPU$core"
     echo "$(mask_of $core)" > "/proc/irq/$irq/smp_affinity" 2>/dev/null || \
       log_fail "IRQ $irq affinity write failed"
