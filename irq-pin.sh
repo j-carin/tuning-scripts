@@ -1,57 +1,95 @@
 #!/usr/bin/env bash
 #
-#  nic_lowlatency_setup.sh — NIC-specific latency tuning + IRQ pinning
+#  irq-pin.sh — NIC-specific latency tuning + IRQ pinning
 #  (run as root; keeps going when a feature isn’t supported)
 
-#########################
-# ─── CONFIG START ───  #
-#########################
-QUEUE_COUNT="${3:-auto}"       # combined Rx+Tx queue pairs (default auto-matches core count)
-RING_SIZE="${4:-1024}"          # small rings reduce latency (default or 4th arg)
-#########################
-# ───  CONFIG END  ───  #
-#########################
+# Default values
+QUEUE_COUNT="auto"
+RING_SIZE="1024"
+IFACE=""
+CORE_RANGE=""
+
+# Function to show usage
+usage() {
+    echo "Usage: $0 -c <core_range> [-i interface] [-q queue_count] [-r ring_size]"
+    echo "Example: $0 -c 10-11 -q 512"
+    echo "Example: $0 -c 9-16 -i eno12409np1 -q 8 -r 256"
+    echo ""
+    echo "Options:"
+    echo "  -c <core_spec>    CPU cores (e.g., 11, 10-11, 9-16, 11,15-17) [REQUIRED]"
+    echo "  -i <interface>    Network interface (auto-detected if not specified)"
+    echo "  -q <queue_count>  Number of queue pairs (default: auto = core count)"
+    echo "  -r <ring_size>    Ring buffer size (default: 1024)"
+    echo "  -h                Show this help message"
+    exit 1
+}
+
+# Parse command line arguments
+while getopts "c:i:q:r:h" opt; do
+    case $opt in
+        c) CORE_RANGE="$OPTARG" ;;
+        i) IFACE="$OPTARG" ;;
+        q) QUEUE_COUNT="$OPTARG" ;;
+        r) RING_SIZE="$OPTARG" ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+
+# Check required arguments
+if [[ -z "$CORE_RANGE" ]]; then
+    echo "Error: Core range (-c) is required"
+    usage
+fi
 
 # Get interface - use provided arg or auto-detect
-if [[ $# -ge 2 ]]; then
-    IFACE="$2"
-else
+if [[ -z "$IFACE" ]]; then
     IFACE=$(./common/get_interface.sh 2>/dev/null)
     if [[ -z "$IFACE" ]]; then
-        echo "Error: Could not auto-detect interface. Please specify manually."
-        echo "Usage: $0 <core_range> [interface] [queue_count] [ring_size]"
+        echo "Error: Could not auto-detect interface. Please specify with -i"
         exit 1
     fi
     echo "Auto-detected interface: $IFACE"
 fi
 
-# Parse core range argument
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <core_range> [interface] [queue_count] [ring_size]"
-  echo "Example: $0 9-16 eno12409np1 8 256"
-  exit 1
-fi
+# Parse core specification into array
+parse_cores() {
+    local spec="$1"
+    local cores=()
+    
+    # Split by comma
+    IFS=',' read -ra PARTS <<< "$spec"
+    
+    for part in "${PARTS[@]}"; do
+        part=$(echo "$part" | tr -d ' ')  # Remove spaces
+        
+        if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            # Range format: N-M
+            local start_core="${BASH_REMATCH[1]}"
+            local end_core="${BASH_REMATCH[2]}"
+            
+            if [[ $start_core -gt $end_core ]]; then
+                echo "Error: Invalid range $part (start > end)"
+                exit 1
+            fi
+            
+            for ((core=start_core; core<=end_core; core++)); do
+                cores+=("$core")
+            done
+        elif [[ "$part" =~ ^[0-9]+$ ]]; then
+            # Single core: N
+            cores+=("$part")
+        else
+            echo "Error: Invalid core specification '$part'. Use formats like: 11, 10-11, or 11,15-17"
+            exit 1
+        fi
+    done
+    
+    # Remove duplicates and sort
+    printf '%s\n' "${cores[@]}" | sort -nu
+}
 
-CORE_RANGE="$1"
-
-# Parse core range into array
-if [[ "$CORE_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-  START_CORE="${BASH_REMATCH[1]}"
-  END_CORE="${BASH_REMATCH[2]}"
-
-  if [[ $START_CORE -gt $END_CORE ]]; then
-    echo "Error: Start core ($START_CORE) cannot be greater than end core ($END_CORE)"
-    exit 1
-  fi
-
-  CORE_LIST=()
-  for ((core=START_CORE; core<=END_CORE; core++)); do
-    CORE_LIST+=("$core")
-  done
-else
-  echo "Error: Invalid core range format. Use format like '9-16'"
-  exit 1
-fi
+CORE_LIST=($(parse_cores "$CORE_RANGE"))
 
 # Auto-set queue count to match core count if not specified
 if [[ "$QUEUE_COUNT" == "auto" ]]; then
