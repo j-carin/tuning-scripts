@@ -187,6 +187,21 @@ for q in /sys/class/net/$IFACE/queues/tx-*; do
 done
 
 ###############################################################################
+echo ">>> 7. Programming XPS to match IRQ/Core affinity"
+if [[ ${#IRQS[@]} -ne $QUEUE_COUNT ]]; then
+  log_fail "IRQ count mismatch – cannot set XPS"
+else
+  for i in $(seq 0 $((QUEUE_COUNT-1))); do
+    core_idx=$((i % ${#CORE_LIST[@]}))
+    core=${CORE_LIST[$core_idx]}
+    mask=$(mask_of $core)
+    echo "    tx-$i → CPU$core (mask $mask)"
+    echo $mask > /sys/class/net/$IFACE/queues/tx-$i/xps_cpus \
+         2>/dev/null || log_fail "tx-$i xps_cpus write failed"
+  done
+fi
+
+###############################################################################
 echo ">>> Re-enabling RDMA if it was previously loaded"
 if [[ "$RDMA_WAS_LOADED" == "true" ]]; then
   echo "    Re-loading irdma module"
