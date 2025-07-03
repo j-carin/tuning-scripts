@@ -95,6 +95,14 @@ case "$ACTION" in
             fi
         fi
         
+        # Set MTU to 1500
+        echo "Setting MTU to 1500..."
+        if ip link set dev "$IFACE" mtu 1500; then
+            echo "✓ MTU set to 1500"
+        else
+            echo "✗ Failed to set MTU"
+        fi
+        
         echo ""
         show_status "$IFACE"
         ;;
@@ -119,6 +127,14 @@ case "$ACTION" in
             else
                 echo "✗ Some offloads could not be enabled"
             fi
+        fi
+        
+        # Set MTU to 1500
+        echo "Setting MTU to 1500..."
+        if ip link set dev "$IFACE" mtu 1500; then
+            echo "✓ MTU set to 1500"
+        else
+            echo "✗ Failed to set MTU"
         fi
         
         echo ""

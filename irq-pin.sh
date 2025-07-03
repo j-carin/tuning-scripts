@@ -104,6 +104,24 @@ fi
 log_fail() { printf '    ✗ %s\n' "$1"; }
 
 ###############################################################################
+echo ">>> Disabling RDMA"
+if lsmod | grep -q "irdma"; then
+  echo "    Removing irdma module"
+  rmmod irdma 2>/dev/null || log_fail "failed to remove irdma module"
+  sleep 1  # give time for module unload
+else
+  echo "    No irdma module loaded"
+fi
+
+###############################################################################
+echo ">>> Setting queue count to $QUEUE_COUNT"
+ethtool -L "$IFACE" combined "$QUEUE_COUNT" 2>/dev/null || \
+  log_fail "failed to set queue count to $QUEUE_COUNT"
+
+# Bring interface back up after queue configuration
+ip link set "$IFACE" up 2>/dev/null || log_fail "failed to bring interface up"
+
+###############################################################################
 echo ">>> Stopping irqbalance so affinities stay fixed"
 if systemctl list-unit-files | grep -q '^irqbalance\.service'; then
   systemctl --quiet stop irqbalance.service 2>/dev/null || true
@@ -153,5 +171,6 @@ else
          2>/dev/null || log_fail "tx-$i xps_cpus write failed"
   done
 fi
+
 
 echo ">>> IRQ pinning complete."
