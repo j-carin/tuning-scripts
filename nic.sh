@@ -74,7 +74,7 @@ echo ">>> 2. Configuring interrupt moderation (1 µs, adaptive off)"
 if ! ethtool -C "$IFACE" adaptive-rx off adaptive-tx off 2>/dev/null; then
     log_fail "adaptive mode disable not supported"
 fi
-if ! ethtool -C "$IFACE" rx-usecs 1 tx-usecs 1 2>/dev/null; then
+if ! ethtool -C "$IFACE" rx-usecs 0 tx-usecs 0 2>/dev/null; then
     log_fail "could not set rx/tx-usecs"
 fi
 
