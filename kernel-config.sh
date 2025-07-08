@@ -18,7 +18,9 @@ BASE_PARAMS="isolcpus={CORES} \
             nosmt \
             intel_idle.max_cstate=0 \
             processor.max_cstate=0 \
-            mitigations=off"
+            mitigations=off \
+            intel_iommu=off \
+            iommu=off"
 #########################
 
 set -euo pipefail
