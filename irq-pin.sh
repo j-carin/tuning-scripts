@@ -133,10 +133,24 @@ fi
 echo ">>> Pinning each queue's IRQ to its core"
 mask_of() { printf "%x" $((1 << "$1")); }
 
+# Try to get PCI device for mlx5 driver detection
+PCI_DEVICE=$(ethtool -i "$IFACE" 2>/dev/null | grep bus-info | cut -d' ' -f2)
+
+# First try traditional TxRx pattern, then try mlx5 pattern
 mapfile -t IRQS < <(
   grep -iE "$IFACE.*TxRx" /proc/interrupts | awk '{print $1}' | tr -d ':' | \
   head -n "$QUEUE_COUNT"
 )
+
+# If no IRQs found with TxRx pattern and we have PCI device, try mlx5 pattern
+if [[ ${#IRQS[@]} -eq 0 ]] && [[ -n "$PCI_DEVICE" ]]; then
+  echo "    No TxRx IRQs found, checking for mlx5 driver IRQs on $PCI_DEVICE"
+  mapfile -t IRQS < <(
+    grep -E "${PCI_DEVICE}.*mlx5_comp[0-9]+@pci" /proc/interrupts | \
+    awk '{print $1}' | tr -d ':' | sort -V | \
+    head -n "$QUEUE_COUNT"
+  )
+fi
 if [[ ${#IRQS[@]} -ne $QUEUE_COUNT ]]; then
   log_fail "found ${#IRQS[@]} IRQs, expected $QUEUE_COUNT — pinning skipped"
 else
