@@ -6,7 +6,7 @@
 #########################
 # ─── CONFIG START ───  #
 #########################
-DATAPLANE_CORES="1-27"   # cores running the hot path
+DATAPLANE_CORES="1-20"   # cores running the hot path
 DISABLE_SMT=true        # true → echo off > smt/control
 #########################
 # ───  CONFIG END  ───  #

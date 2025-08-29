@@ -53,23 +53,23 @@ fi
 parse_cores() {
     local spec="$1"
     local cores=()
-    
+
     # Split by comma
     IFS=',' read -ra PARTS <<< "$spec"
-    
+
     for part in "${PARTS[@]}"; do
         part=$(echo "$part" | tr -d ' ')  # Remove spaces
-        
+
         if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
             # Range format: N-M
             local start_core="${BASH_REMATCH[1]}"
             local end_core="${BASH_REMATCH[2]}"
-            
+
             if [[ $start_core -gt $end_core ]]; then
                 echo "Error: Invalid range $part (start > end)"
                 exit 1
             fi
-            
+
             for ((core=start_core; core<=end_core; core++)); do
                 cores+=("$core")
             done
@@ -81,7 +81,7 @@ parse_cores() {
             exit 1
         fi
     done
-    
+
     # Remove duplicates and sort
     printf '%s\n' "${cores[@]}" | sort -nu
 }
