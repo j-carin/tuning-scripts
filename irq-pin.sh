@@ -105,12 +105,17 @@ log_fail() { printf '    ✗ %s\n' "$1"; }
 
 ###############################################################################
 echo ">>> Disabling RDMA"
+# Always blacklist first to prevent auto-loading
+echo "    Preventing irdma auto-reload"
+echo "install irdma /bin/true" > /etc/modprobe.d/irdma-blacklist.conf 2>/dev/null || log_fail "failed to blacklist irdma"
+
+# Then remove if loaded
 if lsmod | grep -q "irdma"; then
-  echo "    Removing irdma module"
+  echo "    Removing existing irdma module"
   rmmod irdma 2>/dev/null || log_fail "failed to remove irdma module"
   sleep 1  # give time for module unload
 else
-  echo "    No irdma module loaded"
+  echo "    No irdma module currently loaded"
 fi
 
 ###############################################################################
@@ -186,5 +191,9 @@ else
   done
 fi
 
+
+###############################################################################
+echo ">>> Re-enabling RDMA (removing blacklist)"
+rm -f /etc/modprobe.d/irdma-blacklist.conf 2>/dev/null || log_fail "failed to remove irdma blacklist"
 
 echo ">>> IRQ pinning complete."
