@@ -16,8 +16,8 @@ BASE_PARAMS="isolcpus={CORES} \
             housekeeping=cpus:0 \
             intel_pstate=disable \
             nosmt \
-            intel_idle.max_cstate=0 \
-            processor.max_cstate=0 \
+            intel_idle.max_cstate=1 \
+            processor.max_cstate=1 \
             mitigations=off \
             intel_iommu=off \
             iommu=off"
