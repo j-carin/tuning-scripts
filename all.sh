@@ -11,5 +11,4 @@ echo "Tuning for cores: $1"
 ./cpu.sh
 ./irq-pin.sh -c "$1"
 ./offloads.sh disable
-./busy-poll.sh enable 50
 echo "Done"

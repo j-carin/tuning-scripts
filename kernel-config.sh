@@ -10,10 +10,7 @@
 #   • {CORES}         → range of isolated CPUs   (e.g. 1-27)
 #   • housekeeping    → everything else stays   (here: CPU 0)
 #
-BASE_PARAMS="isolcpus={CORES} \
-            nohz_full={CORES} \
-            rcu_nocbs={CORES} \
-            housekeeping=cpus:0 \
+BASE_PARAMS="housekeeping=cpus:0 \
             intel_pstate=disable \
             nosmt \
             intel_idle.max_cstate=1 \
