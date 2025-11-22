@@ -2,198 +2,108 @@
 #
 #  irq-pin.sh — IRQ pinning for network interfaces
 #  (run as root)
+#
+#  Strategy:
+#  1. Ensure enough channels exist (>= max core + 1)
+#  2. Configure RSS to steer traffic only to channels matching selected cores
+#  3. Pin channel N's IRQ to CPU N (natural alignment for ndo_xdp_xmit)
 
-# Default values
-QUEUE_COUNT="auto"
+set -euo pipefail
+
 IFACE=""
 CORE_RANGE=""
 
-# Function to show usage
 usage() {
-    echo "Usage: $0 -c <core_range> [-i interface] [-q queue_count]"
-    echo "Example: $0 -c 10-11"
-    echo "Example: $0 -c 9-16 -i eno12409np1 -q 8"
-    echo ""
-    echo "Options:"
-    echo "  -c <core_spec>    CPU cores (e.g., 11, 10-11, 9-16, 11,15-17) [REQUIRED]"
-    echo "  -i <interface>    Network interface (auto-detected if not specified)"
-    echo "  -q <queue_count>  Number of queue pairs (default: auto = core count)"
-    echo "  -h                Show this help message"
+    echo "Usage: $0 -c <core_range> [-i interface]"
+    echo "Example: $0 -c 2"
+    echo "Example: $0 -c 10-11 -i 400gp1"
     exit 1
 }
 
-# Parse command line arguments
-while getopts "c:i:q:h" opt; do
+while getopts "c:i:h" opt; do
     case $opt in
         c) CORE_RANGE="$OPTARG" ;;
         i) IFACE="$OPTARG" ;;
-        q) QUEUE_COUNT="$OPTARG" ;;
-        h) usage ;;
         *) usage ;;
     esac
 done
 
-# Check required arguments
-if [[ -z "$CORE_RANGE" ]]; then
-    echo "Error: Core range (-c) is required"
-    usage
-fi
+[[ -z "$CORE_RANGE" ]] && usage
 
-# Get interface - use provided arg or auto-detect
+# Auto-detect interface if not specified
 if [[ -z "$IFACE" ]]; then
-    IFACE=$(./common/get_interface.sh 2>/dev/null)
-    if [[ -z "$IFACE" ]]; then
-        echo "Error: Could not auto-detect interface. Please specify with -i"
-        exit 1
-    fi
-    echo "Auto-detected interface: $IFACE"
+    IFACE=$(./common/get_interface.sh 2>/dev/null) || { echo "Error: specify interface with -i"; exit 1; }
 fi
 
-# Parse core specification into array
+# Parse core spec (e.g., "2", "10-11", "1,3,5") into array
 parse_cores() {
     local spec="$1"
     local cores=()
-
-    # Split by comma
     IFS=',' read -ra PARTS <<< "$spec"
-
     for part in "${PARTS[@]}"; do
-        part=$(echo "$part" | tr -d ' ')  # Remove spaces
-
+        part=$(echo "$part" | tr -d ' ')
         if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            # Range format: N-M
-            local start_core="${BASH_REMATCH[1]}"
-            local end_core="${BASH_REMATCH[2]}"
-
-            if [[ $start_core -gt $end_core ]]; then
-                echo "Error: Invalid range $part (start > end)"
-                exit 1
-            fi
-
-            for ((core=start_core; core<=end_core; core++)); do
-                cores+=("$core")
+            for ((c=${BASH_REMATCH[1]}; c<=${BASH_REMATCH[2]}; c++)); do
+                cores+=("$c")
             done
         elif [[ "$part" =~ ^[0-9]+$ ]]; then
-            # Single core: N
             cores+=("$part")
         else
-            echo "Error: Invalid core specification '$part'. Use formats like: 11, 10-11, or 11,15-17"
-            exit 1
+            echo "Error: invalid core spec '$part'"; exit 1
         fi
     done
-
-    # Remove duplicates and sort
     printf '%s\n' "${cores[@]}" | sort -nu
 }
 
 CORE_LIST=($(parse_cores "$CORE_RANGE"))
+MAX_CORE=$(printf '%s\n' "${CORE_LIST[@]}" | sort -n | tail -1)
+MIN_CHANNELS=$((MAX_CORE + 1))
 
-# Auto-set queue count to match core count if not specified
-if [[ "$QUEUE_COUNT" == "auto" ]]; then
-  QUEUE_COUNT=${#CORE_LIST[@]}
-  echo "Auto-setting QUEUE_COUNT to ${QUEUE_COUNT} to match core count"
+echo "Cores: ${CORE_LIST[*]} (need >= $MIN_CHANNELS channels)"
+
+# Disable RDMA
+echo "install irdma /bin/true" > /etc/modprobe.d/irdma-blacklist.conf 2>/dev/null || true
+rmmod irdma 2>/dev/null || true
+
+# Ensure enough channels
+CURRENT=$(ethtool -l "$IFACE" 2>/dev/null | grep -A5 "Current" | grep "Combined:" | awk '{print $2}')
+if [[ $CURRENT -lt $MIN_CHANNELS ]]; then
+    echo "Increasing channels: $CURRENT -> $MIN_CHANNELS"
+    ethtool -L "$IFACE" combined "$MIN_CHANNELS"
+    ip link set "$IFACE" up
+    CURRENT=$MIN_CHANNELS
 fi
 
-set -uo pipefail
-# Allow more queues than cores for round-robin assignment
-if [[ $QUEUE_COUNT -lt ${#CORE_LIST[@]} ]]; then
-  echo "Error: QUEUE_COUNT ($QUEUE_COUNT) cannot be less than core count (${#CORE_LIST[@]})"
-  exit 1
-fi
+# Stop irqbalance
+systemctl stop irqbalance.service 2>/dev/null || true
 
-log_fail() { printf '    ✗ %s\n' "$1"; }
+# Configure RSS to only use selected channels
+WEIGHTS=""
+for ((q=0; q<CURRENT; q++)); do
+    match=0
+    for core in "${CORE_LIST[@]}"; do [[ $q -eq $core ]] && match=1 && break; done
+    WEIGHTS+="$match "
+done
+echo "RSS weights: $WEIGHTS"
+ethtool -X "$IFACE" weight $WEIGHTS
 
-###############################################################################
-echo ">>> Disabling RDMA"
-# Always blacklist first to prevent auto-loading
-echo "    Preventing irdma auto-reload"
-echo "install irdma /bin/true" > /etc/modprobe.d/irdma-blacklist.conf 2>/dev/null || log_fail "failed to blacklist irdma"
+# Get IRQs
+PCI=$(ethtool -i "$IFACE" 2>/dev/null | grep bus-info | awk '{print $2}')
+mapfile -t IRQS < <(grep -E "${PCI}.*mlx5_comp[0-9]+@pci" /proc/interrupts | awk '{print $1}' | tr -d ':' | sort -V)
+[[ ${#IRQS[@]} -eq 0 ]] && mapfile -t IRQS < <(grep -iE "$IFACE.*TxRx" /proc/interrupts | awk '{print $1}' | tr -d ':')
 
-# Then remove if loaded
-if lsmod | grep -q "irdma"; then
-  echo "    Removing existing irdma module"
-  rmmod irdma 2>/dev/null || log_fail "failed to remove irdma module"
-  sleep 1  # give time for module unload
-else
-  echo "    No irdma module currently loaded"
-fi
-
-###############################################################################
-echo ">>> Setting queue count to $QUEUE_COUNT"
-ethtool -L "$IFACE" combined "$QUEUE_COUNT" 2>/dev/null || \
-  log_fail "failed to set queue count to $QUEUE_COUNT"
-
-# Bring interface back up after queue configuration
-ip link set "$IFACE" up 2>/dev/null || log_fail "failed to bring interface up"
-
-###############################################################################
-echo ">>> Stopping irqbalance so affinities stay fixed"
-if systemctl list-unit-files | grep -q '^irqbalance\.service'; then
-  systemctl --quiet stop irqbalance.service 2>/dev/null || true
-elif command -v service &>/dev/null; then
-  service irqbalance stop 2>/dev/null || true
-fi
-
-###############################################################################
-echo ">>> Pinning each queue's IRQ to its core"
+# Pin channel N's IRQ to CPU N
 mask_of() { printf "%x" $((1 << "$1")); }
-
-# Try to get PCI device for mlx5 driver detection
-PCI_DEVICE=$(ethtool -i "$IFACE" 2>/dev/null | grep bus-info | cut -d' ' -f2)
-
-# First try traditional TxRx pattern, then try mlx5 pattern
-mapfile -t IRQS < <(
-  grep -iE "$IFACE.*TxRx" /proc/interrupts | awk '{print $1}' | tr -d ':' | \
-  head -n "$QUEUE_COUNT"
-)
-
-# If no IRQs found with TxRx pattern and we have PCI device, try mlx5 pattern
-if [[ ${#IRQS[@]} -eq 0 ]] && [[ -n "$PCI_DEVICE" ]]; then
-  echo "    No TxRx IRQs found, checking for mlx5 driver IRQs on $PCI_DEVICE"
-  mapfile -t IRQS < <(
-    grep -E "${PCI_DEVICE}.*mlx5_comp[0-9]+@pci" /proc/interrupts | \
-    awk '{print $1}' | tr -d ':' | sort -V | \
-    head -n "$QUEUE_COUNT"
-  )
-fi
-if [[ ${#IRQS[@]} -ne $QUEUE_COUNT ]]; then
-  log_fail "found ${#IRQS[@]} IRQs, expected $QUEUE_COUNT — pinning skipped"
-else
-  for i in $(seq 0 $((QUEUE_COUNT-1))); do
-    irq=${IRQS[$i]}
-    # Round-robin assignment: use modulo to cycle through available cores
-    core_idx=$((i % ${#CORE_LIST[@]}))
-    core=${CORE_LIST[$core_idx]}
-    echo "    IRQ $irq → CPU$core"
-    echo "$(mask_of $core)" > "/proc/irq/$irq/smp_affinity" 2>/dev/null || \
-      log_fail "IRQ $irq affinity write failed"
-  done
-fi
-
-###############################################################################
-echo ">>> Disabling RPS (receive packet steering)"
-for q in /sys/class/net/$IFACE/queues/rx-*; do
-  echo 0 > "$q"/rps_cpus 2>/dev/null || log_fail "$q rps_cpus write failed"
+for core in "${CORE_LIST[@]}"; do
+    echo "Channel $core -> CPU $core"
+    echo "$(mask_of $core)" > "/proc/irq/${IRQS[$core]}/smp_affinity"
+    echo "$(mask_of $core)" > "/sys/class/net/$IFACE/queues/tx-$core/xps_cpus" 2>/dev/null || true
 done
 
-###############################################################################
-echo ">>> Programming XPS to match IRQ/Core affinity"
-if [[ ${#IRQS[@]} -ne $QUEUE_COUNT ]]; then
-  log_fail "IRQ count mismatch – cannot set XPS"
-else
-  for i in $(seq 0 $((QUEUE_COUNT-1))); do
-    core_idx=$((i % ${#CORE_LIST[@]}))
-    core=${CORE_LIST[$core_idx]}
-    mask=$(mask_of $core)
-    echo "    tx-$i → CPU$core (mask $mask)"
-    echo $mask > /sys/class/net/$IFACE/queues/tx-$i/xps_cpus \
-         2>/dev/null || log_fail "tx-$i xps_cpus write failed"
-  done
-fi
+# Disable RPS
+for q in /sys/class/net/$IFACE/queues/rx-*; do
+    echo 0 > "$q/rps_cpus" 2>/dev/null || true
+done
 
-
-###############################################################################
-echo ">>> Re-enabling RDMA (removing blacklist)"
-rm -f /etc/modprobe.d/irdma-blacklist.conf 2>/dev/null || log_fail "failed to remove irdma blacklist"
-
-echo ">>> IRQ pinning complete."
+# Re-enable RDMA
+rm -f /etc/modprobe.d/irdma-blacklist.conf
